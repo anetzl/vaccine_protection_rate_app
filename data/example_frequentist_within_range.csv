@@ -1,0 +1,4 @@
+strain_name,expected_circulation,vaccine1_pr,vaccine2_pr
+a,0.1-0.4,0.9-1,0.3-0.5
+b,0.1-0.3,0.6-0.85,0.5
+c,0.2-0.3,0.3-0.5,0.7-0.9
