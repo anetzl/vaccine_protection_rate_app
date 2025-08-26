@@ -1,0 +1,4 @@
+﻿strain_name,expected_circulation,vaccine1_pr,vaccine2_pr
+a,2,1,0.25
+b,1,0.5,0.5
+c,1,0,1

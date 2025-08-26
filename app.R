@@ -13,7 +13,8 @@ total_pr <- function(df) {
   # calculate protection rates per strain and vaccine
   df %>%
     separate(expected_circulation, into = c("circulation_lower", "circulation_upper"), sep = "-", convert = TRUE, fill= "right") %>%
-    mutate(circulation_upper = ifelse(is.na(circulation_upper), circulation_lower, circulation_upper)) %>%
+    mutate(circulation_upper = ifelse(is.na(circulation_upper), circulation_lower, circulation_upper),
+           norm_circulation = sum(circulation_upper)) %>%
     pivot_longer(
       cols = starts_with("vaccine"),
       names_to = "vaccine",
@@ -28,14 +29,15 @@ total_pr <- function(df) {
     pivot_longer(
       cols = starts_with("circulation"),
       names_to = "circulation_estimate",
-      values_to = "circulation"
+      values_to = "not_normalised_circulation"
     ) %>%
     pivot_longer(
       cols = starts_with("pr"),
       names_to = "pr_estimate",
       values_to = "protection_rate"
     ) %>%
-    mutate(strain_circ_pr = protection_rate * circulation) %>%
+    mutate(circulation = not_normalised_circulation/norm_circulation,
+      strain_circ_pr = protection_rate * circulation) %>%
     group_by(vaccine, circulation_estimate, pr_estimate) %>%
     mutate(vaccine_circ_pr = sum(strain_circ_pr),
            vaccine_circ_pr = ifelse(vaccine_circ_pr > 1, 1, vaccine_circ_pr),
@@ -124,7 +126,11 @@ format_dist_input <- function(df_dist){
   
   df_dist %>%
     separate(expected_circulation, into = c("circulation_lower", "circulation_upper"), sep = "-", convert = TRUE, fill= "right") %>%
-    mutate(circulation_upper = ifelse(is.na(circulation_upper), circulation_lower, circulation_upper)) %>%
+    mutate(circulation_upper = ifelse(is.na(circulation_upper), circulation_lower, circulation_upper),
+           # normalise supplied circulation values to be between 0 and 1
+           norm_circulation = sum(circulation_upper),
+           circulation_lower = circulation_lower/norm_circulation,
+           circulation_upper = circulation_upper/norm_circulation) %>%
     pivot_longer(cols = starts_with("vaccine"), names_to = "vaccine", values_to = "value") %>%
     separate(value, into = c("mean", "sd"), sep = ";", convert = TRUE) %>%
     separate(vaccine, into = c("vaccine", "extra"), sep = "_", convert = TRUE) %>%
@@ -305,8 +311,8 @@ ui <- fluidPage(
                   File of format S+1 rows, V+2 columns. <br>
                   File requires these columns in this order: strain_name, expected_circulation, vaccine1_pr, ..., vaccineV_pr <br>
                   strain_name: Any format, S rows for S strains to be included in the protection rate calculation <br>
-                  expected_circulation: value between 0-1 per strain s, can be specified as "lower-upper" range (e.g: 0.2-0.4). <i>A warning will be issued
-                   if the sum of expected_circulation of all strains is larger than 1</i> <br>
+                  expected_circulation: value between 0-1 per strain s, can be specified as "lower-upper" range (e.g: 0.2-0.4). <i>Circulation 
+                  rates will be normalised to 1.</i> <br>
                   vaccineV_pr: estimated protection rate from vaccine V for strain s, between 0-1, can be specified as "lower-upper" range (e.g: 0.6-0.8)
                   ')),
       fileInput("file_upload", "",
@@ -318,8 +324,8 @@ ui <- fluidPage(
                   File requires these columns in this order: strain_name, expected_circulation, vaccine1_pr (mean;sd), ..., vaccineV_pr (mean;sd)<br>
                   strain_name: Any format, S rows for S strains to be included in the protection rate calculation <br>
                   expected_circulation: value between 0-1 per strain s, can be specified as "lower-upper" range (e.g: 0.2-0.4). Samples will be 
-                  drawn randomly from a uniform distribution between "lower" and "upper" range. <i>A warning will be issued
-                   if the sum of expected_circulation of all strains is larger than 1. Samples with total circulation > 1 will be discarded.</i> <br>
+                  drawn randomly from a uniform distribution between "lower" and "upper" range. <i>Circulation 
+                  rates will be normalised to 1.</i> <br>
                   vaccineV_pr: estimated mean protection rate from vaccine V for strain s with standard deviation, values between 0 and 1 are required. Samples will be drawn from 
                   a normal distribution with the specified mean and sd (e.g: 0.8;0.1). Any samples > 1 will be set to 1, any samples < 0 will be set to 0.
                   ')),
@@ -328,8 +334,7 @@ ui <- fluidPage(
       
       HTML(paste('<B><font size="2">Number of samples for the Bayesian summary:</B><br>')),
       HTML(paste('<n><font size="1">
-                  Integer between 10 and 10000. Samples with total strain circulation > 1 will be removed, leading to an effective sample size lower than the 
-                  input value in such cases.
+                  Integer between 10 and 10000.
                   <B><font size="2">
                   ')),
       numericInput(
