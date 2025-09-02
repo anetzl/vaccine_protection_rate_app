@@ -22,7 +22,7 @@ data_pr <- googlesheets4::range_read(test_path, range = "Overview!P7:AA21") %>%
 
   
 # input data by person
-target_scenario <- colnames(data_circulation)[2]
+target_scenario <- "Approx current"
 sd_pr <- 0.1
 sd_circ <- 0.1
 n_sim <- 20
@@ -118,10 +118,10 @@ calc_mean_strain_pr <- function(total_pr){
   # summarise prs
   total_pr %>%
     filter(!is.na(total_pr)) %>%
-    group_by(vaccine, scenario, full_scenario, variant) %>%
-    reframe(mean = Rmisc::CI(protection_rate)["mean"],
-            lower = Rmisc::CI(protection_rate)["lower"],
-            upper = Rmisc::CI(protection_rate)["upper"]) -> means_strain
+    group_by(vaccine, scenario, variant, full_scenario) %>%
+    reframe(mean = Rmisc::CI(strain_pr)["mean"],
+            lower = Rmisc::CI(strain_pr)["lower"],
+            upper = Rmisc::CI(strain_pr)["upper"]) -> means_strain
   
   return(means_strain)
 }
@@ -162,12 +162,12 @@ plot_specific_scenario <- function(pr_data, target_scenario, means_vacc, means_s
   full_plot <- plot_total_pr(temp_data, temp_means, temp_strains)
   
   strain_plot <- temp_data %>%
-    select(scenario, vaccine, variant, full_scenario, total_pr) %>%
+    select(scenario, vaccine, variant, full_scenario, strain_pr) %>%
     unique() %>%
-    ggplot(aes(x = total_pr, fill = vaccine)) + 
-    geom_vline(data = means_vacc, aes(xintercept = mean, color = vaccine)) +
-    geom_vline(data = means_vacc, aes(xintercept = lower, color = vaccine), linetype = "dashed") +
-    geom_vline(data = means_vacc, aes(xintercept = upper, color = vaccine), linetype = "dashed") +
+    ggplot(aes(x = strain_pr, fill = vaccine)) + 
+    geom_vline(data = temp_strains, aes(xintercept = mean, color = vaccine)) +
+    geom_vline(data = temp_strains, aes(xintercept = lower, color = vaccine), linetype = "dashed") +
+    geom_vline(data = temp_strains, aes(xintercept = upper, color = vaccine), linetype = "dashed") +
     geom_histogram(alpha=0.6, position = 'identity', color = "grey40") + 
     facet_wrap(~variant) + 
     theme_bw() + 
@@ -207,8 +207,11 @@ final_full_plot <- plot_total_pr(total_pr, means_vacc, means_strain)
 
 final_strain_plot <- plot_all_scenarios_per_strain(total_pr, means_vacc, means_strain)
 
-final_strain_plot
+plot_specific_scenario(total_pr, "Approx current", means_vacc, means_strain)
 
+total_pr %>%
+  filter(variant == "145S") %>%
+  View()
 
 total_pr %>%
   ungroup() %>%
@@ -235,4 +238,8 @@ total_pr %>%
          "Mean PR group 2" = estimate2) %>%
   select(!starts_with("estimate")) %>%
   select(!`.y.`) -> tab_out
+
+  
+# plot simulated distributions
+
 
