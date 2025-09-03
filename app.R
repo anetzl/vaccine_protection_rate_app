@@ -440,7 +440,7 @@ server <- function(input, output, session) {
     req(input$selected_sheet)
   #  observeEvent(input$submit_button, {
     tryCatch({
-      googlesheets4::range_read(input$file_upload, range = paste0(input$selected_sheet,"!B6:N19"))
+      googlesheets4::range_read(input$file_upload, range = paste0(input$selected_sheet,"!B6:N20"))
     }, error = function(e) {
       showNotification(paste("Error reading file:", e$message), type = "error")
       NULL
