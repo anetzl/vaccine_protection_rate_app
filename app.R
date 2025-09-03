@@ -10,7 +10,9 @@ library(rstatix)
 library(googlesheets4)
 library(RColorBrewer)
 library(scales)
+library(tibble)
 library(colorspace)
+
 
 # sampling posteriors
 sample_posterior <- function(mean_norm = 0.1, sd_norm = 0.1, n_sim = 100){
@@ -631,4 +633,6 @@ server <- function(input, output, session) {
   
 }
 
+# lets google sheets know that you don't need authentication
+gs4_deauth()
 shinyApp(ui, server)

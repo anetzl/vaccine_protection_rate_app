@@ -4109,11 +4109,8 @@
     }
   },
   "files": {
-    "app_local.R": {
-      "checksum": "f51e2abb7183518b7bf1ab249a809bdc"
-    },
     "app.R": {
-      "checksum": "c99abe40eb148c9cee177ba754c59524"
+      "checksum": "504142763336246fbf7ab9700f68e578"
     },
     "data/example_bayesian_norm.xlsx": {
       "checksum": "9ca56147dea36a370848433259b7f13d"
@@ -4133,14 +4130,17 @@
     "data/example_frequentist_within_range.csv": {
       "checksum": "f075cac237f8a5769fa7847cc2f4a369"
     },
+    "dev/app_local.R": {
+      "checksum": "f51e2abb7183518b7bf1ab249a809bdc"
+    },
+    "dev/test_file.R": {
+      "checksum": "22b79fe12a047cd0d8eef6c398475c42"
+    },
     "LICENSE": {
       "checksum": "1ebbd3e34237af26da5dc08a4e440464"
     },
     "README.md": {
       "checksum": "b687b6b1dc6d40721fd2b2148a371dfb"
-    },
-    "test_file.R": {
-      "checksum": "22b79fe12a047cd0d8eef6c398475c42"
     }
   },
   "users": null
