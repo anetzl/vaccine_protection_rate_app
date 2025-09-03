@@ -1,3 +1,4 @@
+# This app takes a google sheet as input
 library(shiny)
 library(DT)
 library(dplyr)
@@ -6,276 +7,312 @@ library(ggplot2)
 library(patchwork)
 library(readxl)
 library(rstatix)
+library(googlesheets4)
+library(RColorBrewer)
+library(scales)
+library(colorspace)
 
-# calculate total protection rates
-total_pr <- function(df) {
-  
-  # calculate protection rates per strain and vaccine
-  df %>%
-    separate(expected_circulation, into = c("circulation_lower", "circulation_upper"), sep = "-", convert = TRUE, fill= "right") %>%
-    mutate(circulation_upper = ifelse(is.na(circulation_upper), circulation_lower, circulation_upper),
-           norm_circulation = sum(circulation_upper)) %>%
-    pivot_longer(
-      cols = starts_with("vaccine"),
-      names_to = "vaccine",
-      values_to = "protection_rate"
-    ) %>%
-    separate(protection_rate, into = c("pr_lower", "pr_upper"), sep = "-", convert = TRUE, fill= "right") %>%
-    rowwise() %>%
-    mutate(pr_upper = ifelse(is.na(pr_upper), pr_lower, pr_upper),
-           circulation_mean = mean(c(circulation_upper, circulation_lower)),
-           pr_mean = mean(c(pr_lower, pr_upper))) %>%
-    ungroup() %>%
-    pivot_longer(
-      cols = starts_with("circulation"),
-      names_to = "circulation_estimate",
-      values_to = "not_normalised_circulation"
-    ) %>%
-    pivot_longer(
-      cols = starts_with("pr"),
-      names_to = "pr_estimate",
-      values_to = "protection_rate"
-    ) %>%
-    mutate(circulation = not_normalised_circulation/norm_circulation,
-      strain_circ_pr = protection_rate * circulation) %>%
-    group_by(vaccine, circulation_estimate, pr_estimate) %>%
-    mutate(vaccine_circ_pr = sum(strain_circ_pr),
-           vaccine_circ_pr = ifelse(vaccine_circ_pr > 1, 1, vaccine_circ_pr),
-           strain_circ_pr = ifelse(strain_circ_pr > 1, 1, strain_circ_pr),
-           total_circulation = sum(circulation),
-           vaccine = gsub("_pr", "", vaccine )) %>%
-    ungroup() %>%
-    mutate(max_circulation = max(total_circulation)) -> df
-  
-  if(unique(df$max_circulation) > 1){
-    warning("The estimated strain circulation values you provided result in some cases where the total strain circulation exceeds 1, and 
-            hence total protection rates (PR) exceed 1. Please provide estimated circulation 
-            rates where the upper limits of all strains combined do not exceed 1.")
-  }
-  
-  
-  return(df)
+# sampling posteriors
+sample_posterior <- function(mean_norm = 0.1, sd_norm = 0.1, n_sim = 100){
+  res <- rnorm(n_sim, mean = mean_norm, sd = sd_norm)
+  res[is.na(res)] <- 0
+  res[res < 0] <- 0
+  res
 }
 
-pr_protection_plot <- function(df){
-  
-  df_strain <- df %>%
-    select(strain_name, vaccine, strain_circ_pr, circulation_estimate, pr_estimate) %>%
-    group_by(strain_name, vaccine) %>%
-    mutate(min_pr = min(strain_circ_pr),
-           max_pr = max(strain_circ_pr),
-           mean_pr = strain_circ_pr[circulation_estimate == "circulation_mean" & pr_estimate == "pr_mean"]) %>%
-    ungroup() %>%
-    select(strain_name, vaccine, min_pr, max_pr, mean_pr) %>%
-    mutate(Strain = strain_name) %>%
-    unique()
-  
-  
-  df_vacc <- df %>%
-    select(vaccine, vaccine_circ_pr, circulation_estimate, pr_estimate) %>%
-    unique() %>%
-    group_by(vaccine) %>%
-    mutate(min_pr = min(vaccine_circ_pr),
-           max_pr = max(vaccine_circ_pr),
-           mean_pr = vaccine_circ_pr[circulation_estimate == "circulation_mean" & pr_estimate == "pr_mean"],
-           strain_name = "Total") %>%
-    ungroup() %>%
-    select(strain_name, vaccine, min_pr, max_pr, mean_pr) %>%
-    unique()
-  
-  df_vacc %>%
-    ggplot(aes(x = vaccine)) +
-    geom_pointrange(aes(y = mean_pr, ymin = min_pr, ymax = max_pr)) +
-    geom_pointrange(data = df_strain, aes(y = mean_pr, ymin = min_pr, ymax = max_pr, x = vaccine, color = Strain, group = Strain), position = position_dodge(width = 0.2), alpha = 0.6) + 
-    labs(
-      x = "Vaccine",
-      y = "Protection Rate"
-    ) +
-    ylim(c(0,1)) + 
-    theme_bw() -> p
-  
-  return(p)
-}
-
-
-# functions for sampling from distribution
-## simulate from distribution
-simulate_posterior <- function(lower_circulation, upper_circulation,
-                               mean_pr = 0.85, sd_pr = 0.10,
-                               n_sim = 10000) {
-  # Prior distributions
-  circulation_samples <- runif(n_sim, min = lower_circulation, max = upper_circulation)
-  protection_samples <- rnorm(n_sim, mean = mean_pr, sd = sd_pr)
-  
-  # as protection rates can only be between 0 and 1, censor them like this
-  protection_samples[protection_samples > 1] <- 1
-  protection_samples[protection_samples < 0] <- 0
-  
-  # Simulated posterior: product of sampled circulation and protection
-  total_protection_samples <- circulation_samples * protection_samples
-  
-  return(data.frame(
-    circulation_samples = circulation_samples,
-    protection_samples = protection_samples,
-    protection_rate = total_protection_samples,
-    sample_nr = 1:n_sim
-  ))
-}
-
-format_dist_input <- function(df_dist){
-  
-  df_dist %>%
-    separate(expected_circulation, into = c("circulation_lower", "circulation_upper"), sep = "-", convert = TRUE, fill= "right") %>%
-    mutate(circulation_upper = ifelse(is.na(circulation_upper), circulation_lower, circulation_upper),
-           # normalise supplied circulation values to be between 0 and 1
-           norm_circulation = sum(circulation_upper),
-           circulation_lower = circulation_lower/norm_circulation,
-           circulation_upper = circulation_upper/norm_circulation) %>%
-    pivot_longer(cols = starts_with("vaccine"), names_to = "vaccine", values_to = "value") %>%
-    separate(value, into = c("mean", "sd"), sep = ";", convert = TRUE) %>%
-    separate(vaccine, into = c("vaccine", "extra"), sep = "_", convert = TRUE) %>%
-    select(!extra) -> df_dist_long
-  
-  return(df_dist_long)
-  
-}
-
-sample_vaccine_posteriors <- function(df, n_sim = 1000) {
-  
-  df_dist_long <- format_dist_input(df)
-  
-  n_vacc <- unique(df_dist_long$vaccine)
-  n_strain <- unique(df_dist_long$strain_name)
-  full_pr <- list()
-  for(v in n_vacc){
-    
-    for(s in n_strain){
-      
-      temp_df <- df_dist_long %>%
-        filter(strain_name == s) %>%
-        filter(vaccine == v) %>%
-        unique()
-      
-      full_pr[[paste0(v, "_", s)]] <- simulate_posterior(temp_df$circulation_lower, 
-                                                         temp_df$circulation_upper, 
-                                                         temp_df$mean,
-                                                         temp_df$sd,
-                                                         n_sim = n_sim) %>%
-        mutate(strain = s,
-               vaccine = v)
-      
-    }
-    
-  }
-  
-  full_pr <- do.call(rbind, full_pr) 
-  
-  full_pr %>%
-    group_by(vaccine, sample_nr) %>%
-    mutate(total_circulation = sum(circulation_samples)) %>%
-    ungroup() %>%
-    filter(total_circulation > 1) %>%
-    pull(sample_nr) %>%
-    unique() -> repeat_samples
-  
-  full_pr %>%
-    group_by(vaccine, sample_nr) %>%
-    mutate(total_pr = sum(protection_rate),
-           total_circulation = sum(circulation_samples)) %>%
-    ungroup() %>%
-    filter(!sample_nr %in% repeat_samples) -> full_pr
-  
-  
-  return(list("full_pr" = full_pr, "repeat_samples" = repeat_samples))
-  
-}
-
-write_sample_discard <- function(df, n_sim){
-  
-  repeat_samples <- sample_vaccine_posteriors(df, n_sim)$repeat_samples
-  n_repeat_samples <- length(repeat_samples)
-  
-  if(n_repeat_samples > 0){
-    output_text <- paste0('The estimated strain circulation values you provided result in ', n_repeat_samples, ' cases where the total strain circulation exceeds 1. 
-            These samples will be discarded, and hence the effective sample size for calculating posterior protection rates is ', n_sim - n_repeat_samples, ', not your input ', n_sim,'. 
-            Please provide estimated circulation 
-            rates where the upper limits of all strains combined do not exceed one to avoid this warning.')
+get_color_pallette <- function(variable, pallette = NULL){
+  if(is.null(pallette)){
+    target_cols <- hue_pal()(length(variable))
   } else {
-    output_text <- ""
+   
+    base_pallette <- brewer.pal(n = 8, name = pallette)
+    target_cols <- colorRampPalette(base_pallette)(12)
   }
+  names(target_cols) <- variable
   
-  return(output_text)
-  
+  return(target_cols)
 }
 
-# plot posterior distributions
-plot_posterior_pr <- function(df, n_sim = 1000){
+sample_normalised_circulation_scenario <- function(data, target_scenario, sd_norm, n_sim){
   
-  full_pr <- sample_vaccine_posteriors(df, n_sim)$full_pr
+  lapply(data[[target_scenario]], function(x){
+    sample_posterior(x, sd_norm, n_sim)
+  }) -> test_circ
+  names(test_circ) <- data$variant
+  do.call(rbind, test_circ) -> test_circ
+  test_circ / colSums(test_circ)[col(test_circ)] -> circ_norm
+  as.data.frame(circ_norm) %>%
+    rownames_to_column(var = "variant") %>%
+    pivot_longer(cols = colnames(.)[2:ncol(.)], names_to = "sample", values_to = "circulation_rate") %>%
+    mutate(scenario = target_scenario) -> circ_norm
   
-  # calculate mean and sd pr
-  full_pr %>%
-    group_by(strain, vaccine) %>%
-    reframe(mean = Rmisc::CI(protection_rate)["mean"],
-            lower = Rmisc::CI(protection_rate)["lower"],
-            upper = Rmisc::CI(protection_rate)["upper"]) -> means_strain
+  return(circ_norm)
+}
+
+
+sample_pr_scenario <- function(data, target_scenario, sd_norm, n_sim){
   
-  full_pr %>%
-    group_by(vaccine) %>%
+  lapply(data[[target_scenario]], function(x){
+    res <- sample_posterior(x, sd_norm, n_sim)
+    res[res>1] <- 1
+    res
+  }) -> test_circ
+  names(test_circ) <- data$variant
+  do.call(rbind, test_circ) -> test_circ
+  as.data.frame(test_circ) %>%
+    rownames_to_column(var = "variant") %>%
+    pivot_longer(cols = colnames(.)[2:ncol(.)], names_to = "sample", values_to = "protection_rate") %>%
+    mutate(vaccine = target_scenario) -> circ_norm
+  
+  return(circ_norm)
+}
+
+simulate_total_pr_posterior <- function(data_circulation, data_pr, sd_circ, sd_pr, sd_data, n_sim){
+  
+  # rename reactive containers
+  data_circulation <- data_circulation %>%
+    rename(., variant = colnames(.)[1]) %>%
+    filter(!is.na(variant))
+  
+  data_pr <- data_pr %>%
+    rename(., variant = colnames(.)[1]) %>%
+    filter(!is.na(variant)) %>%
+    filter(variant %in% data_circulation$variant)
+  
+  data_pr <- data_pr %>%
+    filter(variant %in% data_circulation$variant)
+  
+  all_norm_circulation <- lapply(colnames(data_circulation)[2:ncol(data_circulation)], function(x){
+    sample_normalised_circulation_scenario(data_circulation, x, sd_circ, n_sim)
+  })
+  
+  all_pr <- lapply(colnames(data_pr)[2:ncol(data_pr)], function(x){
+    sample_pr_scenario(data_pr, x, sd_pr, n_sim)
+  })
+  
+  lapply(all_norm_circulation, function(x){
+    temp <- lapply(all_pr, function(pr){
+      x %>%
+        left_join(., pr, by = c("variant", "sample")) %>%
+        mutate(strain_pr = circulation_rate * protection_rate,
+               full_scenario = paste0(scenario,", v: ", vaccine))
+    })
+    do.call(rbind, temp)
+  }) -> combined_pr
+  
+  combined_pr <- do.call(rbind, combined_pr)
+  
+  total_pr <- combined_pr %>%
+    group_by(full_scenario, sample) %>%
+    mutate(total_pr = sum(strain_pr)) %>%
+    ungroup()
+  
+  return(total_pr)
+}
+
+
+calc_mean_vacc_pr <- function(total_pr){
+  # summarise prs
+  total_pr %>%
+    filter(!is.na(total_pr)) %>%
+    group_by(vaccine, scenario, full_scenario) %>%
     reframe(mean = Rmisc::CI(total_pr)["mean"],
             lower = Rmisc::CI(total_pr)["lower"],
             upper = Rmisc::CI(total_pr)["upper"]) -> means_vacc
   
-  full_pr %>%
-    select(total_pr, vaccine, sample_nr) %>%
+  return(means_vacc)
+}
+
+calc_mean_strain_pr <- function(total_pr){
+  # summarise prs
+  total_pr %>%
+    filter(!is.na(total_pr)) %>%
+    group_by(vaccine, scenario, full_scenario, variant) %>%
+    reframe(mean = Rmisc::CI(strain_pr)["mean"],
+            lower = Rmisc::CI(strain_pr)["lower"],
+            upper = Rmisc::CI(strain_pr)["upper"]) -> means_strain
+  
+  return(means_strain)
+}
+
+plot_total_pr <- function(total_pr, means_vacc, plot_colors){
+  
+  # plot total pr
+  total_pr %>%
+    filter(!is.na(total_pr)) %>%
+    select(scenario, vaccine, full_scenario, total_pr) %>%
     unique() %>%
     ggplot(aes(x = total_pr, fill = vaccine)) + 
-    geom_histogram(alpha=0.6, position = 'identity') + 
     geom_vline(data = means_vacc, aes(xintercept = mean, color = vaccine)) +
     geom_vline(data = means_vacc, aes(xintercept = lower, color = vaccine), linetype = "dashed") +
     geom_vline(data = means_vacc, aes(xintercept = upper, color = vaccine), linetype = "dashed") +
+    geom_histogram(alpha=0.6, position = 'identity', color = "grey40") + 
+    scale_color_manual(values = plot_colors) +
+    scale_fill_manual(values = plot_colors) +
+    facet_wrap(~scenario) + 
     theme_bw() + 
+    theme(strip.background.x = element_blank()) +
     xlim(c(0, 1)) + 
     xlab(paste0("Total PR (", "\u2211", "Strain PR)")) -> p_vacc
   
-  
-  full_pr %>%
-    ggplot(aes(x = protection_rate, fill = vaccine)) + 
-    geom_histogram(alpha=0.6, position = 'identity') + 
-    geom_vline(data = means_strain, aes(xintercept = mean, color = vaccine)) +
-    geom_vline(data = means_strain, aes(xintercept = lower, color = vaccine), linetype = "dashed") +
-    geom_vline(data = means_strain, aes(xintercept = upper, color = vaccine), linetype = "dashed") +
-    facet_wrap(~strain) + 
-    theme_bw() + 
-    xlab("Strain PR (circulation x Vaccine PR)") + 
-    xlim(c(0, 1)) + 
-    theme(strip.background.x = element_blank()) -> p_strain
-  
-  p_vacc / p_strain + plot_layout(widths = c(1, 1/length(unique(full_pr$strain)))) -> p_comb
-  
-  return(p_comb)
+  return(p_vacc)
   
 }
 
-calculate_dist_t_test <- function(df, n_sim){
+plot_specific_scenario <- function(pr_data, target_scenario, means_vacc, means_strain, plot_colors){
+  
+  temp_data <- pr_data %>%
+    filter(scenario == target_scenario)
+  
+  temp_means <- means_vacc %>%
+    filter(scenario == target_scenario)
+  
+  temp_strains <- means_strain %>%
+    filter(scenario == target_scenario)  
+  
+  full_plot <- plot_total_pr(temp_data, temp_means, plot_colors)
+  
+  strain_plot <- temp_data %>%
+    select(scenario, vaccine, variant, full_scenario, strain_pr) %>%
+    unique() %>%
+    ggplot(aes(x = strain_pr, fill = vaccine)) + 
+    geom_vline(data = temp_strains, aes(xintercept = mean, color = vaccine)) +
+    geom_vline(data = temp_strains, aes(xintercept = lower, color = vaccine), linetype = "dashed") +
+    geom_vline(data = temp_strains, aes(xintercept = upper, color = vaccine), linetype = "dashed") +
+    geom_histogram(alpha=0.6, position = 'identity', color = "grey40") + 
+    scale_color_manual(values = plot_colors) +
+    scale_fill_manual(values = plot_colors) +
+    facet_wrap(~variant) + 
+    theme_bw() + 
+    theme(strip.background.x = element_blank()) +
+    xlim(c(0, 1)) + 
+    xlab(paste0("Strain PR")) 
+  
+  comb_plot <- full_plot / strain_plot + plot_layout(guides = 'collect')
+  
+  return(comb_plot)
+}
+
+plot_all_scenarios_per_strain <- function(total_pr, means_vacc, means_strain, plot_colors){
+  
+  all_scenarios <- total_pr %>%
+    filter(!is.na(total_pr)) %>%
+    pull(scenario) %>%
+    unique()
+  
+  all_scenarios_per_strain <- lapply(all_scenarios,
+                                     function(x){plot_specific_scenario(total_pr, x, means_vacc, means_strain, plot_colors)})
+  
+  comb_plot <- wrap_plots(all_scenarios_per_strain, ncol = 1)
+  
+  return(comb_plot)
+}
+
+plot_pr_per_vaccine <- function(total_pr, means_vacc, plot_colors){
+  
+  # plot total pr
+  total_pr %>%
+    filter(!is.na(total_pr)) %>%
+    select(scenario, vaccine, full_scenario, total_pr) %>%
+    unique() %>%
+    ggplot(aes(x = total_pr, fill = scenario)) + 
+    geom_vline(data = means_vacc, aes(xintercept = mean, color = scenario)) +
+    geom_vline(data = means_vacc, aes(xintercept = lower, color = scenario), linetype = "dashed") +
+    geom_vline(data = means_vacc, aes(xintercept = upper, color = scenario), linetype = "dashed") +
+    geom_histogram(alpha=0.6, position = 'identity', color = "grey40") + 
+    facet_wrap(~vaccine) + 
+    theme_bw() + 
+    scale_color_manual(values = plot_colors) +
+    scale_fill_manual(values = plot_colors) +
+    theme(strip.background.x = element_blank()) +
+    xlim(c(0, 1)) + 
+    xlab(paste0("Total PR (", "\u2211", "Strain PR)")) -> p_vacc
+  
+  return(p_vacc)
+  
+}
+
+plot_base_circ_distributions <- function(total_pr, scenario_order, variant_order, vacc_order){
+ 
+  total_pr %>%
+    ungroup() %>%
+    filter(circulation_rate != "NaN") %>%
+    select(sample, vaccine, scenario, variant, circulation_rate, protection_rate) %>%
+    mutate(vaccine = factor(vaccine, levels = vacc_order),
+           scenario = factor(scenario, levels = scenario_order),
+           variant = factor(variant, levels = variant_order[!is.na(variant_order)])) -> sub_sim
+  
+  sub_sim %>%
+    filter(!is.na(circulation_rate)) %>%
+    ggplot(aes(x = circulation_rate)) + 
+    geom_histogram(alpha=0.6, position = 'identity', color = "grey40") + 
+    facet_grid(variant~scenario,
+               labeller = label_wrap_gen(width=10)) + 
+    theme_bw() + 
+    theme(strip.background = element_blank()) +
+    scale_x_continuous(breaks = seq(0, 1, 0.25),
+                       limits = c(-0.1, 1.1)) +
+    xlab(paste0("Simulated Circulation Rates")) -> plot_sim_circ
+  
+  
+  return(plot_sim_circ)
+  
+}
+
+plot_base_pr_distributions <- function(total_pr, scenario_order, variant_order, vacc_order,
+                                       plot_colors){
+  
+  total_pr %>%
+    ungroup() %>%
+    filter(circulation_rate != "NaN") %>%
+    select(sample, vaccine, scenario, variant, circulation_rate, protection_rate) %>%
+    mutate(vaccine = factor(vaccine, levels = vacc_order),
+           scenario = factor(scenario, levels = scenario_order),
+           variant = factor(variant, levels = variant_order[!is.na(variant_order)])) -> sub_sim
+  
+  
+  sub_sim %>%
+    filter(!is.na(protection_rate)) %>%
+    ggplot(aes(x = protection_rate, fill = vaccine)) + 
+    geom_histogram(alpha=0.6, position = 'identity', color = "grey40") + 
+    facet_grid(variant ~ vaccine,
+               labeller = label_wrap_gen(width=10)) + 
+    theme_bw() + 
+    theme(strip.background = element_blank(),
+          legend.position = "none") +
+    scale_x_continuous(breaks = seq(0, 1, 0.25),
+                       limits = c(-0.1, 1.1)) +
+    scale_fill_manual(values = plot_colors) +
+    xlab(paste0("Simulated Protection Rates")) -> plot_sim_pr
+  
+  return(plot_sim_pr)
+  
+}
+
+subset_to_target_vaccine <- function(total_pr, target_vaccines){
+  
+  target_vacc <- strsplit(target_vaccines, ",")[[1]]
+  
+  total_pr %>%
+    filter(vaccine %in% target_vacc) -> sub_pr
+  
+  return(sub_pr)
+  
+}
+
+calculate_dist_t_test <- function(total_pr){
   
   round_three_digits <- function(x){
     round(x, 3)
   }
   
-  full_pr <- sample_vaccine_posteriors(df, n_sim)$full_pr
-  
-  full_pr %>%
-    select(sample_nr, total_pr, vaccine) %>%
+  total_pr %>%
+    ungroup() %>%
+    filter(!is.na(total_pr)) %>%
+    select(scenario, total_pr, vaccine) %>%
     unique() %>%
-    mutate(strain = "Total") %>%
-    group_by(strain) %>%
+    group_by(scenario) %>%
     t_test(total_pr~vaccine, detailed = TRUE) %>%
-    rbind(.,
-          full_pr %>%
-            group_by(strain) %>%
-            t_test(protection_rate~vaccine, detailed = TRUE)) %>%
-    add_significance() %>%
     mutate(across(where(is.double), round_three_digits)) %>%
     mutate("Mean PR group 1 - group 2" = estimate,
            "Mean PR group 1" = estimate1,
@@ -292,47 +329,29 @@ ui <- fluidPage(
   
   HTML(paste('<font size="2">This app calculates total Protection Rates (PR) elicited by various vaccine strains <i>V</i> from supplied estimates 
              using the following formula: <br><br>')),
-             
+  
   withMathJax(HTML("\\( PR(v) = \\sum_{s}^{S} PR_{s}(v) \\cdot PE_s \\)<br><br><br>")),
   withMathJax(HTML(paste("\\( PR_{s}(v) = \\)", "Protection rate by vaccine strain <i>v</i> against virus strain <i>s</i> <br><br>",
                          "\\( PE_s = \\)", "Probability of exposure to strain <i>s</i> (~ expected circulation probability) <br><br><br>")
-                         )),      
+  )),      
   
   
-  HTML(paste('Two evaluation modes are possible: A frequentist approach, where the user supplies discrete values or ranges for 
-             which the PRs should be calcualated, and a Baeysian approach, where strain circulation values are sampled from 
-             a uniform disitribution and strain protection rates from a normal distribution, the distribution parameters 
+  HTML(paste('Strain circulation values and protection rates are sampled from 
+             a normal distribution, the distribution parameters 
              are user specified input. The Bayesian approach results in a distribution of total protection rates per vaccine.<br><br>')),
   
   sidebarLayout(
     sidebarPanel(
-      HTML(paste('<B><font size="2">Frequentist data file (.csv, .xlsx):</B><br>')),
+      textInput("selected_sheet", "Google sheet name",
+                value = "Overview"),
+      HTML(paste('<B><font size="2">URL to Google sheet:</B><br>')),
       HTML(paste('<n><font size="1">
-                  File of format S+1 rows, V+2 columns. <br>
-                  File requires these columns in this order: strain_name, expected_circulation, vaccine1_pr, ..., vaccineV_pr <br>
-                  strain_name: Any format, S rows for S strains to be included in the protection rate calculation <br>
-                  expected_circulation: value between 0-1 per strain s, can be specified as "lower-upper" range (e.g: 0.2-0.4). <i>Circulation 
-                  rates will be normalised to 1.</i> <br>
-                  vaccineV_pr: estimated protection rate from vaccine V for strain s, between 0-1, can be specified as "lower-upper" range (e.g: 0.6-0.8)
+                  Estimated mean protection rate and strain circulation, values between 0 and 1 are required. Samples will be drawn from 
+                  a normal distribution with the specified mean from the google sheet and sd. Any samples > 1 will be set to 1, any samples < 0 will be set to 0.
                   ')),
-      fileInput("file_upload", "",
-                accept = c(".csv", ".xlsx")),
-      
-      HTML(paste('<B><font size="2">Bayesian data file (.csv, .xlsx):</B><br>')),
-      HTML(paste('<n><font size="1">
-                  File of format S+1 rows, V+2 columns. <br>
-                  File requires these columns in this order: strain_name, expected_circulation, vaccine1_pr (mean;sd), ..., vaccineV_pr (mean;sd)<br>
-                  strain_name: Any format, S rows for S strains to be included in the protection rate calculation <br>
-                  expected_circulation: value between 0-1 per strain s, can be specified as "lower-upper" range (e.g: 0.2-0.4). Samples will be 
-                  drawn randomly from a uniform distribution between "lower" and "upper" range. <i>Circulation 
-                  rates will be normalised to 1.</i> <br>
-                  vaccineV_pr: estimated mean protection rate from vaccine V for strain s with standard deviation, values between 0 and 1 are required. Samples will be drawn from 
-                  a normal distribution with the specified mean and sd (e.g: 0.8;0.1). Any samples > 1 will be set to 1, any samples < 0 will be set to 0.
-                  ')),
-      fileInput("dist_file_upload", "",
-                accept = c(".csv", ".xlsx")),
-      
-      HTML(paste('<B><font size="2">Number of samples for the Bayesian summary:</B><br>')),
+      textInput("file_upload", "",
+                value = ""),
+      HTML(paste('<br><B><font size="2">Number of samples for the Bayesian summary:</B><br>')),
       HTML(paste('<n><font size="1">
                   Integer between 10 and 10000.
                   <B><font size="2">
@@ -340,7 +359,7 @@ ui <- fluidPage(
       numericInput(
         inputId = "sim_n",         # ID to reference in server
         label = "",  # Label in the UI
-        value = 1000,              # Default value
+        value = 50,              # Default value
         min = 10,                 # Minimum allowed
         max = 10000,              # Maximum allowed
         step = 1                 # Step size
@@ -352,21 +371,60 @@ ui <- fluidPage(
         min = 1,                 # Minimum allowed
         max = 10000,              # Maximum allowed
         step = 1                 # Step size
-      )
+      ),
+      numericInput(
+        inputId = "pr_sd",         # ID to reference in server
+        label = "Standard deviation for protection rate (normal distribution)",  # Label in the UI
+        value = 0.1,              # Default value
+        min = 0.01,                 # Minimum allowed
+        max = 1,              # Maximum allowed
+        step = 0.01                 # Step size
+      ),
+      numericInput(
+        inputId = "circ_sd",         # ID to reference in server
+        label = "Standard deviation for expected circulation (normal distribution)",  # Label in the UI
+        value = 0.1,              # Default value
+        min = 0.01,                 # Minimum allowed
+        max = 1,              # Maximum allowed
+        step = 0.01                 # Step size
+      ),
+      HTML(paste('<B><font size="2">Target vaccine strain:</B><br>')),
+      HTML(paste('<n><font size="1">
+                 Put in your target vaccine strain as named in the google sheet. Separate multiple strains with a "," and no spaces. 
+                  <B><font size="2">')),
+      textInput("target_vaccine", "",
+                value = "")
       
     ),
     
     mainPanel(
       tabsetPanel(
-        tabPanel("Frequentist Summary",
-                 DTOutput("csv_table"),
-                 plotOutput("protection_plot"),
-                 textOutput("error_msg")),
-        tabPanel("Bayesian Summary",
-                 DTOutput("csv_dist_table"),
-                 textOutput("dist_sample_discard_text"),
-                 plotOutput("protection_dist_plot"),
+        tabPanel("Total protection rates by circulation scenario",
+                 plotOutput("protection_dist_plot", height = 500),
+             #    HTML(paste('<br><B><font size="2">Input mean circulation:</B><br>')),
+                textOutput("stat_table"),
                  DTOutput("stat_dist_table"),
+                 textOutput("error_msg")),
+        tabPanel("Total protection rates by vaccine",
+                 plotOutput("protection_dist_vacc_plot", height = 500),
+                 textOutput("error_msg")),
+        tabPanel("Strain specific protection rates by vaccine and circulation scenario",
+                # DTOutput("csv_dist_table"),
+                 plotOutput("protection_strain_plot"),
+             #    DTOutput("stat_dist_table"),
+                 textOutput("error_msg")),
+        tabPanel("Target vaccine",
+                 plotOutput("target_vaccine_plot", height = 6000),
+                 textOutput("stat_table"),
+                 DTOutput("stat_dist_table_target"),
+                 textOutput("error_msg")),
+        tabPanel("Input data",
+                 textOutput("circulation_table"),
+                 DTOutput("csv_table_circ"),
+                 plotOutput("base_circ_distribution_plot", height = 800, width = "100%"),
+                 textOutput("pr_table"),
+                 DTOutput("csv_table_pr"),
+                 plotOutput("base_pr_distribution_plot", height = 800, width ="100%"),
                  textOutput("error_msg"))
       )
     )
@@ -375,85 +433,202 @@ ui <- fluidPage(
 
 server <- function(input, output, session) {
   
-  csv_data <- reactive({
-    req(input$file_upload)  # Ensure a file is selected
+  csv_data_circulation <- reactive({
+    req(input$file_upload)
+    req(input$selected_sheet)
+  #  observeEvent(input$submit_button, {
     tryCatch({
-      if(grepl(".csv", input$file_upload$datapath)){
-        read.csv(input$file_upload$datapath, stringsAsFactors = FALSE)
-      } else {
-        read_excel(input$file_upload$datapath)
-      }
+      googlesheets4::range_read(input$file_upload, range = paste0(input$selected_sheet,"!B6:N19"))
     }, error = function(e) {
       showNotification(paste("Error reading file:", e$message), type = "error")
       NULL
+  #  })
     })
   })
   
-  output$csv_table <- renderDT({
-    dat <- csv_data()
-    req(dat)  # Only render if data is available
-    datatable(dat, options = list(pageLength = 10))
-  })
-  
-  
-  output$protection_plot <- renderPlot({
-    pr_test <- total_pr(csv_data())
-    validate(
-      need((unique(pr_test$max_circulation) <= 1), paste0("The maximum circulation probability is ", unique(pr_test$max_circulation), ". 
-      Please lower the expected circulation values such that the sum of all strains is <=1.")),
-      need((max(pr_test$protection_rate) <= 1), paste0("The maximum protection rate you provided is ", max(pr_test$protection_rate), ". 
-      Please lower the maximum protection rate such that it is <=1."))
-    )
-    pr_protection_plot(pr_test)
-  })
-  
-  # here for distribution data
-  csv_dist_data <- reactive({
-    req(input$dist_file_upload)  # Ensure a file is selected
+  csv_data_pr <- reactive({
+    req(input$file_upload)
+    req(input$selected_sheet)
+   # observeEvent(input$submit_button, {
     tryCatch({
-      if(grepl(".csv", input$dist_file_upload$datapath)){
-        read.csv(input$dist_file_upload$datapath, stringsAsFactors = FALSE)
-      } else {
-        read_excel(input$dist_file_upload$datapath)
-      }
+      googlesheets4::range_read(input$file_upload, range = paste0(input$selected_sheet,"!P7:AA21"))
     }, error = function(e) {
       showNotification(paste("Error reading file:", e$message), type = "error")
       NULL
+  #  })
     })
   })
   
   observe({set.seed(input$sim_seed)})
   
-  output$csv_dist_table <- renderDT({
-    dat <- csv_dist_data()
-    req(dat)  # Only render if data is available
-    datatable(dat, options = list(pageLength = 10))
+  observe(input$sim_n)
+  
+  observe(input$circ_sd)
+  
+  observe(input$pr_sd)
+  
+  total_pr <- reactive({
+    req(csv_data_circulation())  # Ensure a file is selected
+    tryCatch({
+      simulate_total_pr_posterior(csv_data_circulation(),
+                                  csv_data_pr(),
+                                  input$circ_sd, input$pr_sd,
+                                  n_sim = input$sim_n)
+    }, error = function(e) {
+      showNotification(paste("Error reading file:", e$message), type = "error")
+      NULL
+    })
+  })
+  
+  # get factor levels
+  levels_vacc <- reactive({
+    req(csv_data_pr())
+    colnames(csv_data_pr())[2:ncol(csv_data_pr())]
+  })
+  
+  levels_scenario <- reactive({
+    req(csv_data_circulation())
+    colnames(csv_data_circulation())[2:ncol(csv_data_circulation())]
+  })
+  
+  levels_variant <- reactive({
+    req(csv_data_circulation())
+    csv_data_circulation()[,1]
+  })
+  
+  # get colors
+  vacc_colors <- reactive({
+    req(levels_vacc())
+    get_color_pallette(levels_vacc(), NULL)
+  })
+  circ_colors <- reactive({
+    req(levels_scenario())
+    get_color_pallette(levels_scenario(), "Dark2")
   })
   
   output$protection_dist_plot <- renderPlot({
-    dat <- csv_dist_data()
+    req(total_pr())  # Ensure a file is selected
+    req(vacc_colors())
+    tryCatch({
+      means_vacc <- calc_mean_vacc_pr(total_pr())
+      plot_total_pr(total_pr(), means_vacc, vacc_colors())
+    }, error = function(e) {
+      showNotification(paste("Error reading file:", e$message), type = "error")
+      NULL
+    })
+  },
+  height = 500)
+  
+  output$protection_dist_vacc_plot <- renderPlot({
+    req(total_pr())  # Ensure a file is selected
+    req(circ_colors())
+    tryCatch({
+      means_vacc <- calc_mean_vacc_pr(total_pr())
+      plot_pr_per_vaccine(total_pr(), means_vacc, circ_colors())
+    }, error = function(e) {
+      showNotification(paste("Error reading file:", e$message), type = "error")
+      NULL
+    })
+  },
+  height = 500)
+  
+  output$protection_strain_plot <- renderPlot({
+    req(total_pr())  # Ensure a file is selected
+    req(vacc_colors())
+    tryCatch({
+      means_vacc <- calc_mean_vacc_pr(total_pr())
+      means_strain <- calc_mean_strain_pr(total_pr())
+      plot_all_scenarios_per_strain(total_pr(), means_vacc, means_strain, vacc_colors())
+    }, error = function(e) {
+      showNotification(paste("Error reading file:", e$message), type = "error")
+      NULL
+    })
+  },
+  height = 6000)
+  
+  output$target_vaccine_plot <- renderPlot({
+    req(total_pr())  # Ensure a file is selected
+    req(input$target_vaccine)
+    tryCatch({
+      sub_pr <- subset_to_target_vaccine(total_pr(), input$target_vaccine)
+      means_vacc <- calc_mean_vacc_pr(sub_pr)
+      means_strain <- calc_mean_strain_pr(sub_pr)
+      plot_all_scenarios_per_strain(sub_pr, means_vacc, means_strain, vacc_colors())
+    }, error = function(e) {
+      showNotification(paste("Error reading file:", e$message), type = "error")
+      NULL
+    })
+  },
+  height = 6000)
+  
+  # create plot for simulated expected circulation and protection rates
+  output$base_circ_distribution_plot <- renderPlot({
+    req(total_pr())
+  #  req(levels_variant())
+    tryCatch({
+      plot_base_circ_distributions(total_pr(), 
+                              variant_order = csv_data_circulation()[,1], 
+                              vacc_order = colnames(csv_data_pr())[2:ncol(csv_data_pr())],
+                              scenario_order = colnames(csv_data_circulation())[2:ncol(csv_data_circulation())])
+    }, error = function(e) {
+      showNotification(paste("Error reading file:", e$message), type = "error")
+      NULL
+    })
+  },
+  height = 800, width = 650)
+  
+  output$base_pr_distribution_plot <- renderPlot({
+    req(total_pr())
+    #req(levels_variant())
+    req(vacc_colors())
+    tryCatch({
+      plot_base_pr_distributions(total_pr(), 
+                                 variant_order = csv_data_circulation()[,1], 
+                                 vacc_order = colnames(csv_data_pr())[2:ncol(csv_data_pr())],
+                                 scenario_order = colnames(csv_data_circulation())[2:ncol(csv_data_circulation())],
+                                 plot_colors = vacc_colors())
+    }, error = function(e) {
+      showNotification(paste("Error reading file:", e$message), type = "error")
+      NULL
+    })
+  },
+  height = 800, width = 650)
+  
+  output$circulation_table <- renderText("Input mean circulation:")
+  output$csv_table_circ <- renderDT({
+    dat <- csv_data_circulation()
     req(dat)  # Only render if data is available
-    plot_posterior_pr(dat, input$sim_n)
+    dat <- dat %>%
+      rename(., variant = colnames(.)[1]) %>%
+      filter(!is.na(variant))
+    datatable(dat, options = list(pageLength = 15))
   })
   
-  output$dist_sample_discard_text <- renderText({
-    dat <- csv_dist_data()
+  output$pr_table <- renderText("Input mean vaccine protection rates:")
+  output$csv_table_pr <- renderDT({
+    dat <- csv_data_pr()
     req(dat)  # Only render if data is available
-    write_sample_discard(dat, input$sim_n)
+    dat <- dat %>%
+    rename(., variant = colnames(.)[1]) %>%
+      filter(!is.na(variant))
+    datatable(dat, options = list(pageLength = 15))
   })
-    
+  
+  output$stat_table <- renderText("\n \n \nT test statistical comparison:")
   output$stat_dist_table <- renderDT({
-    tab_out <- calculate_dist_t_test(csv_dist_data(), input$sim_n)
+    tab_out <- calculate_dist_t_test(total_pr())
     req(tab_out)  # Only render if data is available
-    datatable(tab_out, options = list(pageLength = 10))
-    
+    datatable(tab_out, options = list(pageLength = 20))
+  })
+  
+  output$stat_dist_table_target <- renderDT({
+    req(input$target_vaccine)
+    sub_pr <- subset_to_target_vaccine(total_pr(), input$target_vaccine)
+    tab_out <- calculate_dist_t_test(sub_pr)
+    req(tab_out)  # Only render if data is available
+    datatable(tab_out, options = list(pageLength = 20))
   })
   
 }
 
 shinyApp(ui, server)
-
-
-# Feed in serological data, antibody titers
-# look more and more at serology, comparative tests
-# convert titer into protection
