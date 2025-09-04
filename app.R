@@ -13,6 +13,11 @@ library(scales)
 library(tibble)
 library(colorspace)
 
+theme_set(theme_bw() + 
+            theme(strip.background = element_blank(),
+                #  axis.text.x = element_text(angle = 45, hjust = 1)),
+                  panel.spacing.x = unit(1.3, "lines")))
+
 
 # sampling posteriors
 sample_posterior <- function(mean_norm = 0.1, sd_norm = 0.1, n_sim = 100){
@@ -120,7 +125,10 @@ calc_mean_vacc_pr <- function(total_pr){
     group_by(vaccine, scenario, full_scenario) %>%
     reframe(mean = Rmisc::CI(total_pr)["mean"],
             lower = Rmisc::CI(total_pr)["lower"],
-            upper = Rmisc::CI(total_pr)["upper"]) -> means_vacc
+            upper = Rmisc::CI(total_pr)["upper"],
+            ymin = 0,
+            ymax = Inf,
+            total_pr = mean) -> means_vacc
   
   return(means_vacc)
 }
@@ -132,7 +140,9 @@ calc_mean_strain_pr <- function(total_pr){
     group_by(vaccine, scenario, full_scenario, variant) %>%
     reframe(mean = Rmisc::CI(strain_pr)["mean"],
             lower = Rmisc::CI(strain_pr)["lower"],
-            upper = Rmisc::CI(strain_pr)["upper"]) -> means_strain
+            upper = Rmisc::CI(strain_pr)["upper"],
+            ymin = 0,
+            ymax = Inf) -> means_strain
   
   return(means_strain)
 }
@@ -145,16 +155,16 @@ plot_total_pr <- function(total_pr, means_vacc, plot_colors){
     select(scenario, vaccine, full_scenario, total_pr) %>%
     unique() %>%
     ggplot(aes(x = total_pr, fill = vaccine)) + 
+    geom_rect(data = means_vacc, aes(ymin = ymin, ymax = ymax, xmin = lower, xmax = upper, fill = vaccine), color = NA, alpha = 0.3) +
     geom_vline(data = means_vacc, aes(xintercept = mean, color = vaccine)) +
-    geom_vline(data = means_vacc, aes(xintercept = lower, color = vaccine), linetype = "dashed") +
-    geom_vline(data = means_vacc, aes(xintercept = upper, color = vaccine), linetype = "dashed") +
     geom_histogram(alpha=0.6, position = 'identity', color = "grey40") + 
     scale_color_manual(values = plot_colors) +
     scale_fill_manual(values = plot_colors) +
     facet_wrap(~scenario) + 
-    theme_bw() + 
+    # theme_bw() + 
     theme(strip.background.x = element_blank()) +
-    xlim(c(0, 1)) + 
+    xlim(c(-0.02, 1.02)) + 
+    coord_cartesian(expand = FALSE) +
     xlab(paste0("Total PR (", "\u2211", "Strain PR)")) -> p_vacc
   
   return(p_vacc)
@@ -170,7 +180,8 @@ plot_specific_scenario <- function(pr_data, target_scenario, means_vacc, means_s
     filter(scenario == target_scenario)
   
   temp_strains <- means_strain %>%
-    filter(scenario == target_scenario)  
+    filter(scenario == target_scenario) %>%
+    mutate(strain_pr = mean)
   
   full_plot <- plot_total_pr(temp_data, temp_means, plot_colors)
   
@@ -178,16 +189,16 @@ plot_specific_scenario <- function(pr_data, target_scenario, means_vacc, means_s
     select(scenario, vaccine, variant, full_scenario, strain_pr) %>%
     unique() %>%
     ggplot(aes(x = strain_pr, fill = vaccine)) + 
+    geom_rect(data = temp_strains, aes(ymin = ymin, ymax = ymax, xmin = lower, xmax = upper, fill = vaccine), color = NA, alpha = 0.3) +
     geom_vline(data = temp_strains, aes(xintercept = mean, color = vaccine)) +
-    geom_vline(data = temp_strains, aes(xintercept = lower, color = vaccine), linetype = "dashed") +
-    geom_vline(data = temp_strains, aes(xintercept = upper, color = vaccine), linetype = "dashed") +
     geom_histogram(alpha=0.6, position = 'identity', color = "grey40") + 
     scale_color_manual(values = plot_colors) +
     scale_fill_manual(values = plot_colors) +
     facet_wrap(~variant) + 
-    theme_bw() + 
+    # theme_bw() + 
     theme(strip.background.x = element_blank()) +
-    xlim(c(0, 1)) + 
+    xlim(c(-0.02, 1.02)) + 
+    coord_cartesian(expand = FALSE) +
     xlab(paste0("Strain PR")) 
   
   comb_plot <- full_plot / strain_plot + plot_layout(guides = 'collect')
@@ -218,17 +229,17 @@ plot_pr_per_vaccine <- function(total_pr, means_vacc, plot_colors){
     select(scenario, vaccine, full_scenario, total_pr) %>%
     unique() %>%
     ggplot(aes(x = total_pr, fill = scenario)) + 
+    geom_rect(data = means_vacc, aes(ymin = ymin, ymax = ymax, xmin = lower, xmax = upper, fill = vaccine), color = NA, alpha = 0.3) +
     geom_vline(data = means_vacc, aes(xintercept = mean, color = scenario)) +
-    geom_vline(data = means_vacc, aes(xintercept = lower, color = scenario), linetype = "dashed") +
-    geom_vline(data = means_vacc, aes(xintercept = upper, color = scenario), linetype = "dashed") +
     geom_histogram(alpha=0.6, position = 'identity', color = "grey40") + 
     facet_wrap(~vaccine) + 
-    theme_bw() + 
+    # theme_bw() + 
     scale_color_manual(values = plot_colors) +
     scale_fill_manual(values = plot_colors) +
     theme(strip.background.x = element_blank()) +
-    xlim(c(0, 1)) + 
-    xlab(paste0("Total PR (", "\u2211", "Strain PR)")) -> p_vacc
+    scale_x_continuous(name = paste0("Total PR (", "\u2211", "Strain PR)"),
+                       limits = c(-0.02, 1.02)) + 
+    coord_cartesian(expand = FALSE)-> p_vacc
   
   return(p_vacc)
   
@@ -250,10 +261,11 @@ plot_base_circ_distributions <- function(total_pr, scenario_order, variant_order
     geom_histogram(alpha=0.6, position = 'identity', color = "grey40") + 
     facet_grid(variant~scenario,
                labeller = label_wrap_gen(width=10)) + 
-    theme_bw() + 
+    # theme_bw() + 
     theme(strip.background = element_blank()) +
     scale_x_continuous(breaks = seq(0, 1, 0.25),
-                       limits = c(-0.1, 1.1)) +
+                       limits = c(-0.02, 1.02)) +
+    coord_cartesian(expand = FALSE) +
     xlab(paste0("Simulated Circulation Rates")) -> plot_sim_circ
   
   
@@ -279,12 +291,13 @@ plot_base_pr_distributions <- function(total_pr, scenario_order, variant_order, 
     geom_histogram(alpha=0.6, position = 'identity', color = "grey40") + 
     facet_grid(variant ~ vaccine,
                labeller = label_wrap_gen(width=10)) + 
-    theme_bw() + 
+    # theme_bw() + 
     theme(strip.background = element_blank(),
           legend.position = "none") +
     scale_x_continuous(breaks = seq(0, 1, 0.25),
-                       limits = c(-0.1, 1.1)) +
+                       limits = c(-0.02, 1.02)) +
     scale_fill_manual(values = plot_colors) +
+    coord_cartesian(expand = FALSE) +
     xlab(paste0("Simulated Protection Rates")) -> plot_sim_pr
   
   return(plot_sim_pr)
@@ -342,10 +355,15 @@ ui <- fluidPage(
              a normal distribution, the distribution parameters 
              are user specified input. The Bayesian approach results in a distribution of total protection rates per vaccine.<br><br>')),
   
+  
   sidebarLayout(
     sidebarPanel(
       textInput("selected_sheet", "Google sheet name",
                 value = "Overview"),
+      textInput("circ_range", "Range for circulation values, including strain names and circulation scenarios",
+                value = "B6:N20"),
+      textInput("pr_range", "Range for protection rate values, including strain names and vaccine names",
+                value = "P7:AA21"),
       HTML(paste('<B><font size="2">URL to Google sheet:</B><br>')),
       HTML(paste('<n><font size="1">
                   Estimated mean protection rate and strain circulation, values between 0 and 1 are required. Samples will be drawn from 
@@ -423,10 +441,10 @@ ui <- fluidPage(
         tabPanel("Input data",
                  textOutput("circulation_table"),
                  DTOutput("csv_table_circ"),
-                 plotOutput("base_circ_distribution_plot", height = 800, width = "100%"),
+                 plotOutput("base_circ_distribution_plot", height = 800, width = "150%"),
                  textOutput("pr_table"),
                  DTOutput("csv_table_pr"),
-                 plotOutput("base_pr_distribution_plot", height = 800, width ="100%"),
+                 plotOutput("base_pr_distribution_plot", height = 800, width ="180%"),
                  textOutput("error_msg"))
       )
     )
@@ -438,9 +456,10 @@ server <- function(input, output, session) {
   csv_data_circulation <- reactive({
     req(input$file_upload)
     req(input$selected_sheet)
+    req(input$circ_range)
   #  observeEvent(input$submit_button, {
     tryCatch({
-      googlesheets4::range_read(input$file_upload, range = paste0(input$selected_sheet,"!B6:N20"))
+      googlesheets4::range_read(input$file_upload, range = paste0(input$selected_sheet,"!", input$circ_range))
     }, error = function(e) {
       showNotification(paste("Error reading file:", e$message), type = "error")
       NULL
@@ -451,9 +470,10 @@ server <- function(input, output, session) {
   csv_data_pr <- reactive({
     req(input$file_upload)
     req(input$selected_sheet)
+    req(input$pr_range)
    # observeEvent(input$submit_button, {
     tryCatch({
-      googlesheets4::range_read(input$file_upload, range = paste0(input$selected_sheet,"!P7:AA21"))
+      googlesheets4::range_read(input$file_upload, range = paste0(input$selected_sheet,"!", input$pr_range))
     }, error = function(e) {
       showNotification(paste("Error reading file:", e$message), type = "error")
       NULL
@@ -577,7 +597,7 @@ server <- function(input, output, session) {
       NULL
     })
   },
-  height = 800, width = 650)
+  height = 800)
   
   output$base_pr_distribution_plot <- renderPlot({
     req(total_pr())
@@ -594,7 +614,7 @@ server <- function(input, output, session) {
       NULL
     })
   },
-  height = 800, width = 650)
+  height = 800)
   
   output$circulation_table <- renderText("Input mean circulation:")
   output$csv_table_circ <- renderDT({

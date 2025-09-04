@@ -8,6 +8,19 @@ library(readxl)
 library(rstatix)
 library(googlesheets4)
 
+# test histogram
+data <- data.frame(test = c(rep(0, 10), rep(1,20)))
+
+total_pr %>%
+  ggplot(aes(x = circulation_rate)) + 
+  geom_histogram(position = 'identity', color = "red") +
+  #xlim(c(-0.05, 1.05)) + 
+  coord_cartesian(expand = FALSE) +
+  scale_x_continuous(breaks = seq(0, 1, 0.25),
+                     limits = c(-0.02, 1.02),
+                     name = "Simulated Protection Rates")
+
+
 test_path <- "https://docs.google.com/spreadsheets/d/1HN37wI3sHbwiIgfdDKIGT_IUMwspR1kmv4DODpEvY7Y/edit?gid=1659497864#gid=1659497864"
 
 # these work for reading
@@ -126,28 +139,6 @@ calc_mean_strain_pr <- function(total_pr){
   return(means_strain)
 }
 
-plot_total_pr <- function(total_pr, means_vacc, means_strain){
-  
-  # plot total pr
-  total_pr %>%
-    filter(!is.na(total_pr)) %>%
-    select(scenario, vaccine, full_scenario, total_pr) %>%
-    unique() %>%
-    ggplot(aes(x = total_pr, fill = vaccine)) + 
-    geom_vline(data = means_vacc, aes(xintercept = mean, color = vaccine)) +
-    geom_vline(data = means_vacc, aes(xintercept = lower, color = vaccine), linetype = "dashed") +
-    geom_vline(data = means_vacc, aes(xintercept = upper, color = vaccine), linetype = "dashed") +
-    geom_histogram(alpha=0.6, position = 'identity', color = "grey40") + 
-    facet_wrap(~scenario) + 
-    theme_bw() + 
-    theme(strip.background.x = element_blank()) +
-    xlim(c(0, 1)) + 
-    xlab(paste0("Total PR (", "\u2211", "Strain PR)")) -> p_vacc
-  
-  return(p_vacc)
-  
-}
-
 plot_specific_scenario <- function(pr_data, target_scenario, means_vacc, means_strain){
   
   temp_data <- pr_data %>%
@@ -203,7 +194,53 @@ means_vacc <- calc_mean_vacc_pr(total_pr)
 
 means_strain <- calc_mean_strain_pr(total_pr)
 
+
+
+plot_total_pr <- function(total_pr, means_vacc, plot_colors){
+  
+  means_vacc %>%
+    mutate(ymin = 0,
+           ymax = Inf,
+           total_pr = mean) -> means_vacc
+  
+  # plot total pr
+  total_pr %>%
+    filter(!is.na(total_pr)) %>%
+    select(scenario, vaccine, full_scenario, total_pr) %>%
+    unique() %>%
+    ggplot(aes(x = total_pr, fill = vaccine)) + 
+   geom_rect(data = means_vacc, aes(ymin = ymin, ymax = ymax, xmin = lower, xmax = upper, fill = vaccine), color = NA, alpha = 0.2) +
+    geom_vline(data = means_vacc, aes(xintercept = mean, color = vaccine)) +
+ #   #  geom_vline(data = means_vacc, aes(xintercept = lower, color = vaccine), linetype = "dashed") +
+    #  geom_vline(data = means_vacc, aes(xintercept = upper, color = vaccine), linetype = "dashed") +
+    geom_histogram(alpha=0.6, position = 'identity', color = "grey40") + 
+  #  scale_color_manual(values = plot_colors) +
+  #  scale_fill_manual(values = plot_colors) +
+    facet_wrap(~scenario) + 
+    # theme_bw() + 
+    theme(strip.background.x = element_blank()) +
+    scale_x_continuous(name = paste0("Total PR (", "\u2211", "Strain PR)"),
+                       limits = c(-0.01, 1.01),
+                       expand = c(0,0)) -> p_vacc
+  
+  return(p_vacc)
+  
+}
+
+
+
 final_full_plot <- plot_total_pr(total_pr, means_vacc, means_strain)
+
+final_full_plot
+test_rect <- means_vacc %>%
+  filter(vaccine == "145S") %>%
+  mutate(total_pr = mean,
+         ymin = 0, ymax = Inf)
+
+
+plot_total_pr(total_pr %>%
+                filter(vaccine == "145S"), means_vacc %>% 
+                filter(vaccine == "145S"))
 
 final_strain_plot <- plot_all_scenarios_per_strain(total_pr, means_vacc, means_strain)
 
