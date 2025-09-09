@@ -12,6 +12,7 @@ library(RColorBrewer)
 library(scales)
 library(tibble)
 library(colorspace)
+library(shinycssloaders) # for loading spinner
 
 theme_set(theme_bw() + 
             theme(strip.background = element_blank(),
@@ -359,18 +360,19 @@ ui <- fluidPage(
   sidebarLayout(
     sidebarPanel(
       textInput("selected_sheet", "Google sheet name",
-                value = "Overview"),
+                value = "Target"),
       textInput("circ_range", "Range for circulation values, including strain names and circulation scenarios",
-                value = "B6:N20"),
+                value = "B6:H14"),
       textInput("pr_range", "Range for protection rate values, including strain names and vaccine names",
-                value = "P7:AA21"),
+                value = "L7:R15"),
       HTML(paste('<B><font size="2">URL to Google sheet:</B><br>')),
       HTML(paste('<n><font size="1">
                   Estimated mean protection rate and strain circulation, values between 0 and 1 are required. Samples will be drawn from 
                   a normal distribution with the specified mean from the google sheet and sd. Any samples > 1 will be set to 1, any samples < 0 will be set to 0.
                   ')),
       textInput("file_upload", "",
-                value = ""),
+                value = "https://docs.google.com/spreadsheets/d/1HN37wI3sHbwiIgfdDKIGT_IUMwspR1kmv4DODpEvY7Y/edit?gid=2041122204#gid=2041122204"),
+      actionButton("submit", "Submit"),
       HTML(paste('<br><B><font size="2">Number of samples for the Bayesian summary:</B><br>')),
       HTML(paste('<n><font size="1">
                   Integer between 10 and 10000.
@@ -413,38 +415,39 @@ ui <- fluidPage(
                  Put in your target vaccine strain as named in the google sheet. Separate multiple strains with a "," and no spaces. 
                   <B><font size="2">')),
       textInput("target_vaccine", "",
-                value = "")
+                value = ""),
+      actionButton("submit_vacc", "Submit")
       
     ),
     
     mainPanel(
       tabsetPanel(
         tabPanel("Total protection rates by circulation scenario",
-                 plotOutput("protection_dist_plot", height = 500),
+                 withSpinner(plotOutput("protection_dist_plot", height = 500)),
              #    HTML(paste('<br><B><font size="2">Input mean circulation:</B><br>')),
                 textOutput("stat_table"),
                  DTOutput("stat_dist_table"),
                  textOutput("error_msg")),
         tabPanel("Total protection rates by vaccine",
-                 plotOutput("protection_dist_vacc_plot", height = 500),
+                 withSpinner(plotOutput("protection_dist_vacc_plot", height = 500)),
                  textOutput("error_msg")),
         tabPanel("Strain specific protection rates by vaccine and circulation scenario",
                 # DTOutput("csv_dist_table"),
-                 plotOutput("protection_strain_plot"),
+                 withSpinner(plotOutput("protection_strain_plot")),
              #    DTOutput("stat_dist_table"),
                  textOutput("error_msg")),
         tabPanel("Target vaccine",
-                 plotOutput("target_vaccine_plot", height = 6000),
+                 withSpinner(plotOutput("target_vaccine_plot", height = 6000)),
                  textOutput("stat_table"),
                  DTOutput("stat_dist_table_target"),
                  textOutput("error_msg")),
         tabPanel("Input data",
                  textOutput("circulation_table"),
                  DTOutput("csv_table_circ"),
-                 plotOutput("base_circ_distribution_plot", height = 800, width = "150%"),
+                 withSpinner(plotOutput("base_circ_distribution_plot", height = 800, width = "150%")),
                  textOutput("pr_table"),
                  DTOutput("csv_table_pr"),
-                 plotOutput("base_pr_distribution_plot", height = 800, width ="180%"),
+                 withSpinner(plotOutput("base_pr_distribution_plot", height = 800, width ="180%")),
                  textOutput("error_msg"))
       )
     )
@@ -453,7 +456,7 @@ ui <- fluidPage(
 
 server <- function(input, output, session) {
   
-  csv_data_circulation <- reactive({
+  csv_data_circulation <- eventReactive(input$submit,{
     req(input$file_upload)
     req(input$selected_sheet)
     req(input$circ_range)
@@ -467,7 +470,7 @@ server <- function(input, output, session) {
     })
   })
   
-  csv_data_pr <- reactive({
+  csv_data_pr <- eventReactive(input$submit,{
     req(input$file_upload)
     req(input$selected_sheet)
     req(input$pr_range)
@@ -568,7 +571,7 @@ server <- function(input, output, session) {
   },
   height = 6000)
   
-  output$target_vaccine_plot <- renderPlot({
+  target_vaccine_plot <- eventReactive(input$submit_vacc,{
     req(total_pr())  # Ensure a file is selected
     req(input$target_vaccine)
     tryCatch({
@@ -580,6 +583,10 @@ server <- function(input, output, session) {
       showNotification(paste("Error reading file:", e$message), type = "error")
       NULL
     })
+  })
+  
+  output$target_vaccine_plot <- renderPlot({
+    target_vaccine_plot()
   },
   height = 6000)
   
